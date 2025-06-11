@@ -1,5 +1,4 @@
-# WARNING: the uart lines of the air conditioner are 5v. To use the pico's UART connections, you need to step down to RX and step up to TX. I'm using a generic 4 Channels IIC I2C Logic Level Converter Bi-Directional Module 3.3V to 5V Shifter.
-
+# WARNING: the uart lines of the air conditioner are 5v. To use the pico's UART connections, you need to step down to RX and step up to TX. I'm using a generic 4 Channels IIC I2C Logic Level Converter Bi-Directional Module 3.3V to 5V Shifter. test.
 from machine import UART, Pin
 import time
 
