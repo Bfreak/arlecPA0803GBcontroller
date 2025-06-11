@@ -1,14 +1,15 @@
-# WARNING: the uart lines of the air conditioner are 5v. To use the pico's UART connections, you need to step down to RX and step up to TX. I'm using a generic 4 Channels IIC I2C Logic Level Converter Bi-Directional Module 3.3V to 5V Shifter.
 from machine import UART, Pin
 import time
 
-# Setup UARTs
-uart = UART(0, baudrate=9600, tx=Pin(0), rx=Pin(1))  # MAIN TX/RX
-uart1 = UART(1, baudrate=9600, tx=Pin(4), rx=Pin(5))  # PANEL TX/RX
+# UART0: MAIN TX/RX (TX = GP0, RX = GP1)
+uart0 = UART(0, baudrate=9600, tx=Pin(0), rx=Pin(1))
 
-print("UART reader + command sender started...\nType 'timer', 'power', 'mode', 'down', 'up', or 'fan' to send.")
+# UART1: PANEL RX (RX = GP5)
+uart1 = UART(1, baudrate=9600, tx=Pin(4), rx=Pin(5))
 
-# Button codes as byte arrays
+print("Pico UART command sender + logger started...\n")
+print("Type 'timer', 'power', 'mode', 'up', 'down', or 'fan' and press Enter.\n")
+
 commands = {
     "timer": bytes.fromhex("CE FE FE CE CE CE CE CE CE FE CE CE FE FE 0E CE FE FE CE CE CE CE CE CE FE CE CE CE 0E"),
     "power": bytes.fromhex("CE FE FE CE CE CE CE CE FE FE FE CE CE FE CE CE FE FE CE CE CE CE CE CE FE CE CE CE 0E"),
@@ -21,38 +22,44 @@ commands = {
 def to_hex_string(data):
     return ' '.join(f'{b:02X}' for b in data)
 
-# Send command by name
-def send_command(name):
-    cmd = commands.get(name)
-    if cmd:
-        uart.write(cmd)
-        print(f"\033[1;32;40m[SENT -> MAIN]: {name.upper()} | {to_hex_string(cmd)}\n")
-    else:
-        print(f"\033[1;33;40m[WARNING] Unknown command: {name}\n")
+def read_uart_burst(uart, label):
+    if uart.any():
+        data = bytearray()
+        start = time.ticks_ms()
+        while time.ticks_diff(time.ticks_ms(), start) < 50:
+            if uart.any():
+                data += uart.read(uart.any())
+        if data:
+            if label == "MAIN -> PANEL":
+                color = "\033[1;32;40m"  # Green
+            else:
+                color = "\033[1;31;40m"  # Red
+            print(f"{color}[{label}]: {to_hex_string(data)}\033[0m")
 
-# Allow sending commands by input
-def check_input():
-    try:
-        import sys
-        if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
-            line = sys.stdin.readline().strip().lower()
-            send_command(line)
-    except:
-        pass  # not interactive mode or select not supported
+
+def send_command(name):
+    if name in commands:
+        data = commands[name]
+        uart0.write(data)
+        print(f"\033[1;32;40m[SENT -> MAIN] {name.upper()}: {to_hex_string(data)}\033[0m\n")
+    else:
+        print(f"\033[1;33;40m[WARNING] Unknown command: {name}\033[0m\n")
+
+# For interactive command input (via REPL/Thonny)
+try:
+    import sys, select
+    interactive = True
+except:
+    interactive = False
 
 # Main loop
 while True:
-    # Log PANEL → MAIN traffic
-    if uart1.any():
-        data1 = uart1.read(uart1.any())
-        print("\033[1;31;40m[PANEL -> MAIN]: " + to_hex_string(data1))
+    read_uart_burst(uart1, "PANEL -> MAIN")  # RED
+    read_uart_burst(uart0, "MAIN -> PANEL")  # GREEN
+    if interactive:
+        if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
+            cmd = sys.stdin.readline().strip().lower()
+            send_command(cmd)
 
-    # Optional: send commands interactively (only works via REPL)
-    # comment out if you're running non-interactively
-    try:
-        import select
-        check_input()
-    except ImportError:
-        pass
+    time.sleep(0.01)
 
-    time.sleep(0.1)
