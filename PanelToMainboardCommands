@@ -1,0 +1,8 @@
+commands = {
+    "timer": bytes.fromhex("CE FE FE CE CE CE CE CE CE FE CE CE FE FE 0E CE FE FE CE CE CE CE CE CE FE CE CE CE 0E"),
+    "power": bytes.fromhex("CE FE FE CE CE CE CE CE FE FE FE CE CE FE CE CE FE FE CE CE CE CE CE CE FE CE CE CE 0E"),
+    "mode":  bytes.fromhex("CE FE FE CE CE CE CE CE CE FE CE CE CE FE CE FE FE CE CE CE CE CE CE FE CE CE CE 0E"),
+    "down":  bytes.fromhex("CE FE FE CE CE CE CE CE FE CE CE CE FE CE CE FE FE CE CE CE CE CE CE FE CE CE CE 0E"),
+    "up":    bytes.fromhex("CE FE FE CE CE CE CE FE CE CE CE FE CE FE 0E CE FE FE CE CE CE CE CE CE FE CE CE CE 0E"),
+    "fan":   bytes.fromhex("CE FE FE CE CE CE CE CE CE FE CE CE FE FE FE CE FE FE CE CE CE CE CE CE FE CE CE CE 0E"),
+}
