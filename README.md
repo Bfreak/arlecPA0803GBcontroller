@@ -6,8 +6,8 @@ In the process, I'd like to hack the unit (probably via the communication betwee
 
 Notes on the hardware:
 - the communication I'm attempting to decode is between the devices main control board and a front panel
-- the front panel has 6 buttons, 8 status LEDs, a 2 digit 7 segment display, a piezo buzzer, and an IR receiver for the remote.
-- the main board has all the usual relays and control gear for the AC fans, compressor, etc.
+- the front panel has 6 buttons, 8 status LEDs, a 2 digit 7 segment display (SSC5023HG-2), a piezo buzzer, and an IR receiver for the remote. It also has a micro controller (eastsoft HR7P169BFGSF)
+- the main board has all the usual relays and control gear for the AC fans, compressor, etc. I'm unwilling to unmount the main board to see what the microcontroller situation is on the back as I'm not comfortable getting too close to a very large capacitor and mains elctronic switch gear.
 - the main board has 2 temperature sensors; one on the top of the unit near the ac's 'cold side' air intake, and one on the 'hot side' air intake, quite close to or possibly on the condensor coil, presumably monitoring for overheating. 
 
 **warning**
