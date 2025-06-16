@@ -40,3 +40,8 @@ After moving the timings around a bit, I managed to send any button press using 
 As a result, I can now conceivably press the panel buttons for the unit as needed, with 99% reliability. 
 
 See the new file for a script on how to do so. Decoding of the messages from the main board to the panel to come. If that is complete, I should in theory be able to simulate the front panel entirely within the pico, and allow for control and monitoring of the AC system remotely. 
+
+**update** 16-6-2025 (part 2)
+
+I added the code to decode button presses from the front panel, and added the power button press. All are working well, without the need for pull up/down resistors.
+I thought decoding arriving data from the mainboard would be trivial at this point, with a good template for data capture, however the pico absolutely refuses to read incoming data in the same way, even though my scope and logic analyzer have no problems. It may be because of some kind of degradation, as the data capture points are right up against the front panel pins, with a 1m ish cable to the header on the main board.
