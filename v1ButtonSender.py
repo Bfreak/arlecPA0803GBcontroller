@@ -2,7 +2,7 @@ from machine import Pin
 import time
 
 # Transmit pin (GPIO1)
-tx = Pin(1, Pin.OUT)
+tx = Pin(0, Pin.OUT)
 tx.high()  # idle state
 
 # Known commands (excluding confirm)
@@ -13,6 +13,7 @@ known_codes = {
     "fan":   "1110011111111010101101011",
     "mode":  "1110011111111001101101001",
     "sleep": "1110011111111001001101000",
+    "power": "1110011111110111101100101",
 }
 
 # Confirm code sent after 11.2 ms
@@ -58,4 +59,5 @@ while True:
         break
     except Exception as e:
         print("Error:", e)
+
 
