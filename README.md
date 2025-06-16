@@ -31,3 +31,12 @@ I now have a logic analyzer, as no standard version of UART seemed to apply to t
 
 With the above notes, chatGPT suggests 'IR-style pulse-width encoded protocol or custom synchronous signaling'.
 Needless to say, I'm well out of my depth. I'll be asking for help in misc. online places soon.
+
+**update** 16-6-2025
+
+Success! In the end, I did away with all known forms of communication protocol and decided to wrangle the proprietary one myself. 
+I managed to identify the start and stop bit timings, allowing me to read binary codes from the 'high' times, which formed 25 bit codes for button presses.
+After moving the timings around a bit, I managed to send any button press using GPIO pins on the rasperry pi via a voltage step up for the logic (5v for the board).
+As a result, I can now conceivably press the panel buttons for the unit as needed, with 99% reliability. 
+
+See the new file for a script on how to do so. Decoding of the messages from the main board to the panel to come. If that is complete, I should in theory be able to simulate the front panel entirely within the pico, and allow for control and monitoring of the AC system remotely. 
