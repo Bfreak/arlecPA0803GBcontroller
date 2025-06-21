@@ -47,3 +47,12 @@ See the new file for a script on how to do so. Decoding of the messages from the
 
 I added the code to decode button presses from the front panel, and added the power button press. All are working well, without the need for pull up/down resistors.
 I thought decoding arriving data from the mainboard would be trivial at this point, with a good template for data capture, however the pico absolutely refuses to read incoming data in the same way, even though my scope and logic analyzer have no problems. It may be because of some kind of degradation, as the data capture points are right up against the front panel pins, with a 1m ish cable to the header on the main board.
+
+**update** 21-6-2025
+
+Efforts to decode the communication sent from the main board to the front panel have proven fruitless. This is almost certainly due to my lack of knowledge with PIO, and I was unable to make accurate enough reads of the data using the same method used to capture button presses. 
+I have decided to change tack to get a working controller of some sorts in place, and will simply have the pico providing commands to the unit with no communication from the main board. This has two main drawbacks; no ability to be 100% certain of the state of the air conditioner at any given moment (the pico will store the current state in memory) and no ability to read the ambient air temperature recorded by the unit. I will add an AHT 20 to the Pico to overcome the former issue (and add humidity sensing, a feature not present on the unit by default) at some point.
+The pico is powered by the 5v provided by the main board, so in the event of a total power loss, both the pico and the AC return to the default state. So in the event that the state of the board and the unit become seperarated, I can flip a mains power switch which is easily accessible to return them both back to the default state.
+That said, It does seem like button presses sent from the pico are pretty much 100% reliable, so provided I've got the logic correct, I don't see this really being an issue ever.
+
+For now, I'm going to have the device host a local webpage to ensure offline control is available, and add MQTT functionlity or nodered or whatever else down the line, depending on how soon it becomes annoying not to have.
