@@ -5,8 +5,8 @@ import time
 import ure
 
 # --- Wi-Fi Credentials ---
-SSID = "YOUR_WIFI_HERE"
-PASSWORD = "YOUR_WIFI_PASSWORD_HERE"
+SSID = "Your_wifi_SSID"
+PASSWORD = "Your_wifi_password"
 
 # --- Connect to Wi-Fi ---
 wlan = network.WLAN(network.STA_IF)
@@ -86,7 +86,8 @@ def handle_command(cmd):
     if cmd == "power":
         state["power"] = not state["power"]
         if state["power"]:
-            state["mode"] = "cool"
+            if state["mode"] == "standby":
+                state["mode"] = "cool"
             state["temperature"] = 22
             state["fan"] = "low"
         else:
@@ -94,36 +95,15 @@ def handle_command(cmd):
             state["fan"] = "low"
         send_code(known_codes["power"])
 
-    elif cmd.startswith("mode_"):
-        target = cmd.split("_", 1)[1]
-        if target == "standby":
-            state["power"] = False
-            state["mode"] = "standby"
-            state["fan"] = "low"
-            send_code(known_codes["power"])
-            return
-
+    elif cmd == "mode_cycle" and state["power"]:
         mode_order = ["cool", "dehumidify", "fan"]
-        if not state["power"]:
-            state["power"] = True
-            state["mode"] = "cool"
-            state["temperature"] = 22
-            state["fan"] = "low"
-            send_code(known_codes["power"])
-            time.sleep_ms(300)
-
         current = state["mode"]
-        if current not in mode_order:
-            current = "cool"
-
-        while current != target:
-            current_index = mode_order.index(current)
-            current = mode_order[(current_index + 1) % len(mode_order)]
-            state["mode"] = current
-            if current == "dehumidify":
-                state["fan"] = "low"
-            send_code(known_codes["mode"])
-            time.sleep_ms(300)
+        current_index = mode_order.index(current)
+        next_mode = mode_order[(current_index + 1) % len(mode_order)]
+        state["mode"] = next_mode
+        if next_mode == "dehumidify":
+            state["fan"] = "low"
+        send_code(known_codes["mode"])
 
     elif cmd == "up" and state["mode"] == "cool":
         if state["temperature"] < 30:
@@ -140,9 +120,8 @@ def handle_command(cmd):
             state["fan"] = "high" if state["fan"] == "low" else "low"
             send_code(known_codes["fan"])
         else:
-            # Press fan button twice with 100ms gap to skip window
             send_code(known_codes["fan"])
-            time.sleep_ms(100)
+            time.sleep_ms(300)
             send_code(known_codes["fan"])
             state["fan"] = "high" if state["fan"] == "low" else "low"
             state["fan_toggle_window"] = True
@@ -167,17 +146,16 @@ def check_timers():
 
 # --- Web Page ---
 def html():
-    mode_colors = {
-        "standby": "background:red;color:white;",
-        "cool": "background:green;color:white;",
-        "dehumidify": "background:green;color:white;",
-        "fan": "background:green;color:white;"
-    }
-    current_mode = state["mode"]
     fan_display = str(state['fan']).upper()
+    power_button = f"<form><button name='cmd' value='power'>{'Power Off' if state['power'] else 'Power On'}</button></form>"
+
+    if state["power"]:
+        mode_button = f"<form><button name='cmd' value='mode_cycle'>Mode: {state['mode']}</button></form>"
+    else:
+        mode_button = ""
 
     return f"""<!DOCTYPE html>
-<html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+<html><head><meta name='viewport' content='width=device-width, initial-scale=1'>
 <style>
 body {{ font-family: sans-serif; background: #f0f0f0; padding: 20px; }}
 .container {{ background: white; padding: 20px; border-radius: 8px; max-width: 500px; margin: auto; box-shadow: 0 0 10px #aaa; }}
@@ -188,31 +166,29 @@ form {{ display: inline-block; margin: 4px; }}
 button {{ padding: 10px 20px; font-size: 16px; }}
 input[type='text'] {{ padding: 6px; width: 90px; font-size: 16px; }}
 </style>
-</head><body><div class=\"container\">
+</head><body><div class='container'>
 <h2>AC Control Panel</h2>
 <p><b>Power:</b> {state['power']}</p>
 <p><b>Mode:</b> {state['mode']}</p>
 <p><b>Set temperature:</b> {state['temperature']} C</p>
 <p><b>Fan:</b> {fan_display}</p>
-<div class=\"grid\">
-  <div class=\"column\">
-    <form><button name=\"cmd\" value=\"mode_cool\" {'disabled' if current_mode == 'cool' else ''} style=\"{mode_colors['cool'] if current_mode == 'cool' else ''}\">Cool</button></form>
-    <form><button name=\"cmd\" value=\"mode_dehumidify\" {'disabled' if current_mode == 'dehumidify' else ''} style=\"{mode_colors['dehumidify'] if current_mode == 'dehumidify' else ''}\">Dehumidify</button></form>
-    <form><button name=\"cmd\" value=\"mode_fan\" {'disabled' if current_mode == 'fan' else ''} style=\"{mode_colors['fan'] if current_mode == 'fan' else ''}\">Fan</button></form>
-    <form><button name=\"cmd\" value=\"mode_standby\" {'disabled' if current_mode == 'standby' else ''} style=\"{mode_colors['standby'] if current_mode == 'standby' else ''}\">Standby</button></form>
+<div class='grid'>
+  <div class='column'>
+    {power_button}
+    {mode_button}
   </div>
-  <div class=\"column\">
-    <form><button name=\"cmd\" value=\"up\">Temp +</button></form>
-    <form><button name=\"cmd\" value=\"down\">Temp -</button></form>
-    <form><button name=\"cmd\" value=\"fan\">Fan: {fan_display}</button></form>
+  <div class='column'>
+    <form><button name='cmd' value='up'>Temp +</button></form>
+    <form><button name='cmd' value='down'>Temp -</button></form>
+    <form><button name='cmd' value='fan'>Fan: {fan_display}</button></form>
   </div>
 </div>
 <h3>Power-Off Timers</h3>
 <form>
-  <button name="off_h" value="1">OFF in 1h</button>
-  <button name="off_h" value="2">2h</button>
-  <button name="off_h" value="3">3h</button>
-  <button name="off_h" value="5">5h</button>
+  <button name='off_h' value='1'>OFF in 1h</button>
+  <button name='off_h' value='2'>2h</button>
+  <button name='off_h' value='3'>3h</button>
+  <button name='off_h' value='5'>5h</button>
 </form>
 </div></body></html>"""
 
