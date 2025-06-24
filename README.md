@@ -56,3 +56,11 @@ The pico is powered by the 5v provided by the main board, so in the event of a t
 That said, It does seem like button presses sent from the pico are pretty much 100% reliable, so provided I've got the logic correct, I don't see this really being an issue ever.
 
 For now, I'm going to have the device host a local webpage to ensure offline control is available, and add MQTT functionlity or nodered or whatever else down the line, depending on how soon it becomes annoying not to have.
+
+**update** 24-6-2025
+
+Success on mainboard message decoding! Switching to IRQ has made things much easier. The timings are a bit questionable, but the decoding rate is sufficient to reliable decode and send mainboard messages to the front panel. I made a few attempts to try and decode the output binary in order to figure out segments, but couldn't make any sense of it, and instead worked to just record all of the various states of the digit display and LEDs so that they can be looked up on arrival. 
+
+With this, the project is properly ready to start building a full remote management system that can confidently and accurately command the mainboard, and interpret it's replies, ensuring that commands were sent succesfully, and continued monitoring. 
+
+Though sending commands TO the front panel is possible, I don't realistically have a need to do so as my unit will be inaccessible during use, and what's on the front panel is irrelevant. For that reason, the code for sending messages TO the front panel will purely be to validate the received messages from the mainboard, and probably won't feature in any final full working versions of the controller. 
