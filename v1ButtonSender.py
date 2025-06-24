@@ -1,8 +1,10 @@
+# This script sends simulated button presses from the air conditioner's front panel to the main board via an RPI pico, and a 5v to 3.3v logic analyzer. 
+
 from machine import Pin
 import time
 
 # Transmit pin (GPIO1)
-tx = Pin(0, Pin.OUT)
+tx = Pin(1, Pin.OUT, Pin.PULL_UP)
 tx.high()  # idle state
 
 # Known commands (excluding confirm)
@@ -46,6 +48,14 @@ print("Type a command name to transmit:")
 print("Available: " + ", ".join(known_codes.keys()))
 
 while True:
+
+# #test code to repeatedly send 'timer' for diagnosing
+#     send_code(known_codes["timer"])
+#     time.sleep_us(11200)  # 11.2 ms delay
+#     send_code(confirm_code)
+#     time.sleep_ms(5000)
+
+
     try:
         cmd = input(">> ").strip().lower()
         if cmd in known_codes:
