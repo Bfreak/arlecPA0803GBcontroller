@@ -3,8 +3,9 @@ import time
 
 from decodedmessages import messages  
 
-pin = Pin(0, Pin.IN, Pin.PULL_UP)
-last_state = pin.value()
+rxpin = Pin(0, Pin.IN, Pin.PULL_UP)
+txpin = Pin(1, Pin.OUT, Pin.PULL_UP)
+last_state = rxpin.value()
 last_change_time = time.ticks_us()
 durations = []
 collecting = False
@@ -33,7 +34,7 @@ def decode_message(symbols):
     return None
 
 while True:
-    current_state = pin.value()
+    current_state = rxpin.value()
     now = time.ticks_us()
 
     if current_state == 1 and last_state == 0:
