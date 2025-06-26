@@ -1,8 +1,10 @@
 from machine import Pin
 import time
+from bittimings import *
 
 from decodedmessages import messages  
-
+# Disable pin 0 so it does not affect the voltage of what it's connected to
+Pin(0, Pin.IN)
 pin = Pin(1, Pin.IN, Pin.PULL_UP)
 last_state = pin.value()
 last_change_time = time.ticks_us()
@@ -10,18 +12,6 @@ durations = []
 collecting = False
 message_start_time = 0
 MESSAGE_TIMEOUT_US = 1000
-
-def classify_duration(dur):
-    if 2200 <= dur <= 2300:
-        return "START - "  # Start
-    elif 200 <= dur <= 300:
-        return "1"
-    elif 700 <= dur <= 800:
-        return "0"
-    elif 300 <= dur <= 600:
-        return " - END"
-    else:
-        return "?"
     
 def decode_message(symbols):
     # Remove start and end markers, keep only bits
@@ -50,10 +40,38 @@ while True:
                 durations = [pulse_us]
         else:
             durations.append(pulse_us)
-            if symbol == " - END":
+            # If 73 durations collected, force end bit
+            if len(durations) == 74:
+                print("=== Message Captured (74 bits, forced end) ===")
+                symbols = [classify_duration(d) for d in durations[:-1]] + [" - END"]
+                decoded_str = ''.join(symbols)
+                if "?" in symbols:
+                    print("Decoding failed")
+                elif len(decoded_str) < 72:
+                    print("Decoding failed, < 72 chars")
+                else:
+                    print("Decoded:", decoded_str)
+                for idx, (d, s) in enumerate(zip(durations, symbols)):
+                    if s == "?":
+                        print(f"Bit {idx}: Unrecognized duration {d} us")
+                decoded = decode_message(symbols)
+                if decoded:
+                    print("Matched message:", decoded)
+                else:
+                    print("No match found in known messages.")
+                print("------------------------")
+                collecting = False
+                durations = []
+            elif symbol == " - END":
                 print("=== Message Captured ===")
                 symbols = [classify_duration(d) for d in durations]
-                print("Decoded:", ''.join(symbols))
+                decoded_str = ''.join(symbols)
+                if "?" in symbols:
+                    print("Decoding failed")
+                elif len(decoded_str) < 72:
+                    print("Decoding failed, < 72 chars")
+                else:
+                    print("Decoded:", decoded_str)
                 # Print durations for undecoded bits
                 for idx, (d, s) in enumerate(zip(durations, symbols)):
                     if s == "?":
@@ -76,7 +94,13 @@ while True:
     if collecting and time.ticks_diff(now, last_change_time) > MESSAGE_TIMEOUT_US:
         print("=== Message Captured ===")
         symbols = [classify_duration(d) for d in durations]
-        print("Decoded:", ''.join(symbols), " - NO END DETECTED")
+        decoded_str = ''.join(symbols)
+        if "?" in symbols:
+            print("Decoding failed")
+        elif len(decoded_str) < 72:
+            print("Decoding failed, < 72 chars")
+        else:
+            print("Decoded:", decoded_str, " - NO END DETECTED")
         # Print durations for undecoded bits
         for idx, (d, s) in enumerate(zip(durations, symbols)):
             if s == "?":

@@ -2,10 +2,12 @@ from machine import Pin, Timer
 import time
 import _thread
 import ujson
-from simple import MQTTClient
+from bittimings import *
+from umqttsimple import MQTTClient
 import network
-
 from decodedmessages import messages  
+from wifi_config import WIFI_SSID, WIFI_PASSWORD
+
 
 # --- LED Setup ---
 led = Pin("LED", Pin.OUT)
@@ -90,25 +92,12 @@ tx_pin.high()  # idle state
 known_codes = {
     "up":    "1110011111111010001101010",
     "down":  "1110011111111000101100111",
-    "timer": "1110011111111000001100110",
     "fan":   "1110011111111010101101011",
     "mode":  "1110011111111001101101001",
     "sleep": "1110011111111001001101000",
     "power": "1110011111110111101100101",
 }
 confirm_code = "1110011111111111101110101"
-
-def classify_duration(dur):
-    if 2200 <= dur <= 2300:
-        return "START - "  # Start
-    elif 150 <= dur <= 300:
-        return "1"
-    elif 600 <= dur <= 900:
-        return "0"
-    elif 300 <= dur <= 600:
-        return " - END"
-    else:
-        return "?"
 
 def decode_message(symbols):
     # Remove start and end markers, keep only bits
@@ -121,11 +110,7 @@ def decode_message(symbols):
 
 # Add a variable to track the time of the last successful decode
 last_successful_decode_time = 0
-IGNORE_AFTER_DECODE_US = 1  # 100 ms in microseconds
-
-# WiFi Setup
-WIFI_SSID = "WestburyWifiHorse"
-WIFI_PASSWORD = "TessJames1"
+IGNORE_AFTER_DECODE_US = 1  # 100 ms in microseconds"
 
 def connect_wifi():
     wlan = network.WLAN(network.STA_IF)
@@ -140,8 +125,9 @@ def connect_wifi():
 connect_wifi()
 
 # --- MQTT Setup ---
-MQTT_BROKER = "test.mosquitto.org"  # Public broker for testing
-MQTT_CLIENT_ID = "accontroller"
+MQTT_BROKER = "192.168.1.200"
+MQTT_PORT = 1883  # Add this line
+MQTT_CLIENT_ID = "Anon"
 MQTT_TOPIC_MODE = "accontroller/currentmode"
 MQTT_TOPIC_TEMP = "accontroller/currenttemp"
 MQTT_SUB_MODE = "accontroller/setmode"
@@ -179,33 +165,38 @@ def mqtt_callback(topic, msg):
     except Exception as e:
         print("MQTT callback error:", e)
 
+# Add a global to track the last time a button was pressed
+last_button_press_time = 0
+
 def enforce_requested_state():
-    global last_requested_mode, last_requested_temp
+    global last_requested_mode, last_requested_temp, last_button_press_time
+
+    mode_cycle = ["cool", "dry", "fan"]  # Adjust as needed
+    requested_mode = last_requested_mode
+
     with message_lock:
         current = latest_message
 
     if not current:
-        print("No current state available, cannot enforce requested state.")
         return
 
-    # Handle power off
-    if last_requested_mode == "power":
-        print("Power command requested, sending power to AC.")
-        send_code(known_codes["power"])
-        time.sleep(0.5)
-        return
+    current_mode = current.get("mode", "").lower()
+
 
     # If in standby, send power to turn on
     if current.get("mode", "").lower() == "standby" and last_requested_mode and last_requested_mode != "standby":
         print("Unit in standby, sending power ON.")
         send_code(known_codes["power"])
+        last_button_press_time = time.ticks_ms()
         time.sleep(0.5)
         return
 
-    mode_cycle = ["cool", "dry", "fan"]  # Adjust as needed
-    requested_mode = last_requested_mode
-    current_mode = current.get("mode", "").lower()
-    print(f"[enforce_requested_state] Requested: {requested_mode}, Current: {current_mode}")
+    if current_mode != "standby" and last_requested_mode == "standby":
+        print("power off request recived, sending power OFF.")
+        send_code(known_codes["power"])
+        last_button_press_time = time.ticks_ms()
+        time.sleep(0.5)
+        return
 
     if requested_mode and requested_mode not in mode_cycle and requested_mode != "standby" and requested_mode != "power":
         print(f"Unknown requested mode: {requested_mode}")
@@ -215,11 +206,10 @@ def enforce_requested_state():
     if requested_mode and current_mode != requested_mode:
         print(f"Current mode is '{current_mode}', changing to '{requested_mode}'")
         send_code(known_codes["mode"])
+        last_button_press_time = time.ticks_ms()
         time.sleep(0.5)
-        print("Sent one mode press, will check again after next state update.")
+        print("attempting to change mode...")
         # Do NOT return here; let the function continue to check temperature if needed
-    elif requested_mode:
-        print(f"Already in requested mode: {requested_mode}")
 
     # Only adjust temperature if in cool mode and a temperature is requested
     if (
@@ -230,20 +220,23 @@ def enforce_requested_state():
         try:
             display_temp = int(current["display"])
             print(f"Current display temp: {display_temp}, requested: {last_requested_temp}")
-            if display_temp < last_requested_temp:
-                send_code(known_codes["up"])
-                time.sleep(0.5)
-                print("Sent one 'up' press, will check again after next state update.")
-            elif display_temp > last_requested_temp:
-                send_code(known_codes["down"])
-                time.sleep(0.5)
-                print("Sent one 'down' press, will check again after next state update.")
+            diff = last_requested_temp - display_temp
+            if diff > 0:
+                for _ in range(diff):
+                    send_code(known_codes["up"])
+                    last_button_press_time = time.ticks_ms()
+                    time.sleep(0.1)
+                print(f"Sent {diff} 'up' presses.")
+            elif diff < 0:
+                for _ in range(-diff):
+                    send_code(known_codes["down"])
+                    last_button_press_time = time.ticks_ms()
+                    time.sleep(0.1)
+                print(f"Sent {abs(diff)} 'down' presses.")
             else:
                 print(f"Set temperature to {last_requested_temp}")
         except Exception as e:
             print("Error adjusting temperature:", e)
-    elif last_requested_temp is not None and current.get("mode", "").lower() != "cool":
-        print("Settemp received, but not in cool mode. Will apply settemp when cool mode is active.")
 
 def publish_latest_message(decoded, symbols, durations):
     if decoded is None:
@@ -254,7 +247,6 @@ def publish_latest_message(decoded, symbols, durations):
             mqtt_client.publish(MQTT_TOPIC_MODE, decoded["mode"])
         if "display" in decoded:
             mqtt_client.publish(MQTT_TOPIC_TEMP, str(decoded["display"]))
-        print("Published current mode and temp to MQTT.")
     except Exception as e:
         print("MQTT publish failed:", e)
     # Update last AC message time for LED logic
@@ -263,7 +255,7 @@ def publish_latest_message(decoded, symbols, durations):
     enforce_requested_state()
 
 # Setup MQTT client and callback
-mqtt_client = MQTTClient(MQTT_CLIENT_ID, MQTT_BROKER)
+mqtt_client = MQTTClient(MQTT_CLIENT_ID, MQTT_BROKER, port=MQTT_PORT)
 mqtt_client.set_callback(mqtt_callback)
 try:
     mqtt_client.connect()
@@ -281,11 +273,16 @@ except Exception as e:
 def mainboard_reader():
     global last_state, last_change_time, durations, collecting, message_start_time
     global latest_message, latest_symbols, latest_durations
-    global last_successful_decode_time
+    global last_successful_decode_time, last_button_press_time
 
     while True:
         current_state = rx_pin.value()
         now = time.ticks_us()
+
+        # Ignore all incoming messages for 500ms after any button press
+        if time.ticks_diff(time.ticks_ms(), last_button_press_time) < 500:
+            last_state = current_state
+            continue
 
         if current_state == 1 and last_state == 0:
             last_change_time = now  # HIGH started
@@ -302,19 +299,11 @@ def mainboard_reader():
             else:
                 durations.append(pulse_us)
                 if symbol == " - END":
-                    # print("=== Message Captured ===")
                     symbols = [classify_duration(d) for d in durations]
-                    # print("Decoded:", ''.join(symbols))
-                    for idx, (d, s) in enumerate(zip(durations, symbols)):
-                        if s == "?":
-                            print(f"Bit {idx}: Unrecognized duration {d} us")
                     decoded = decode_message(symbols)
                     if decoded:
-                        print(time.gmtime, decoded)
                         last_successful_decode_time = now
                         publish_latest_message(decoded, symbols, durations)
-                    else:
-                        print("No match found in known messages.")
                     with message_lock:
                         latest_message = decoded
                         latest_symbols = symbols
@@ -328,19 +317,11 @@ def mainboard_reader():
 
         # Timeout if collecting but no end bit after 1000 µs
         if collecting and time.ticks_diff(now, last_change_time) > MESSAGE_TIMEOUT_US:
-            # print("=== Message Captured ===")
             symbols = [classify_duration(d) for d in durations]
-            # print("Decoded:", ''.join(symbols), " - END (TIMEOUT)")
-            for idx, (d, s) in enumerate(zip(durations, symbols)):
-                if s == "?":
-                    print(f"Bit {idx}: Unrecognized duration {d} us")
             decoded = decode_message(symbols)
             if decoded:
-                print(time.gmtime, decoded)
                 last_successful_decode_time = now
                 publish_latest_message(decoded, symbols, durations)
-            else:
-                print("No match found in known messages.")
             with message_lock:
                 latest_message = decoded
                 latest_symbols = symbols
@@ -364,7 +345,6 @@ def send_bit(bit):
         send_pulse(0, 215)
 
 def send_code(binary_string):
-    print(f"Sending: {binary_string}")
     send_pulse(0, 4400)    # Start bit
     send_pulse(1, 1850)    # Gap 1
     for bit in binary_string:
@@ -407,7 +387,7 @@ def mqtt_connect():
         led_state["mqtt_connected"] = False
         set_led("slow")
 
-mqtt_client = MQTTClient(MQTT_CLIENT_ID, MQTT_BROKER)
+mqtt_client = MQTTClient(MQTT_CLIENT_ID, MQTT_BROKER, port=MQTT_PORT)
 mqtt_client.set_callback(mqtt_callback)
 mqtt_connect()
 
