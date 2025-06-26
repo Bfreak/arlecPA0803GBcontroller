@@ -3,7 +3,7 @@ import time
 
 from decodedmessages import messages  
 
-pin = Pin(0, Pin.IN, Pin.PULL_UP)
+pin = Pin(1, Pin.IN, Pin.PULL_UP)
 last_state = pin.value()
 last_change_time = time.ticks_us()
 durations = []
