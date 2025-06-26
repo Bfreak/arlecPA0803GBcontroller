@@ -101,9 +101,9 @@ confirm_code = "1110011111111111101110101"
 def classify_duration(dur):
     if 2200 <= dur <= 2300:
         return "START - "  # Start
-    elif 200 <= dur <= 300:
+    elif 150 <= dur <= 300:
         return "1"
-    elif 700 <= dur <= 800:
+    elif 600 <= dur <= 900:
         return "0"
     elif 300 <= dur <= 600:
         return " - END"
