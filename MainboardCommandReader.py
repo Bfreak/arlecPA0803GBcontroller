@@ -22,7 +22,7 @@ def classify_duration(dur):
         return " - END"
     else:
         return "?"
-
+    
 def decode_message(symbols):
     # Remove start and end markers, keep only bits
     bits = [s for s in symbols if s in ("0", "1")]

@@ -259,6 +259,8 @@ def publish_latest_message(decoded, symbols, durations):
         print("MQTT publish failed:", e)
     # Update last AC message time for LED logic
     led_state["last_ac_msg"] = time.time()
+    # Enforce requested state after every new message
+    enforce_requested_state()
 
 # Setup MQTT client and callback
 mqtt_client = MQTTClient(MQTT_CLIENT_ID, MQTT_BROKER)
@@ -300,20 +302,19 @@ def mainboard_reader():
             else:
                 durations.append(pulse_us)
                 if symbol == " - END":
-                    print("=== Message Captured ===")
+                    # print("=== Message Captured ===")
                     symbols = [classify_duration(d) for d in durations]
-                    print("Decoded:", ''.join(symbols))
+                    # print("Decoded:", ''.join(symbols))
                     for idx, (d, s) in enumerate(zip(durations, symbols)):
                         if s == "?":
                             print(f"Bit {idx}: Unrecognized duration {d} us")
                     decoded = decode_message(symbols)
                     if decoded:
-                        print("Matched message:", decoded)
+                        print(time.gmtime, decoded)
                         last_successful_decode_time = now
                         publish_latest_message(decoded, symbols, durations)
                     else:
                         print("No match found in known messages.")
-                    print("------------------------")
                     with message_lock:
                         latest_message = decoded
                         latest_symbols = symbols
@@ -327,20 +328,19 @@ def mainboard_reader():
 
         # Timeout if collecting but no end bit after 1000 µs
         if collecting and time.ticks_diff(now, last_change_time) > MESSAGE_TIMEOUT_US:
-            print("=== Message Captured ===")
+            # print("=== Message Captured ===")
             symbols = [classify_duration(d) for d in durations]
-            print("Decoded:", ''.join(symbols), " - END (TIMEOUT)")
+            # print("Decoded:", ''.join(symbols), " - END (TIMEOUT)")
             for idx, (d, s) in enumerate(zip(durations, symbols)):
                 if s == "?":
                     print(f"Bit {idx}: Unrecognized duration {d} us")
             decoded = decode_message(symbols)
             if decoded:
-                print("Matched message:", decoded)
+                print(time.gmtime, decoded)
                 last_successful_decode_time = now
                 publish_latest_message(decoded, symbols, durations)
             else:
                 print("No match found in known messages.")
-            print("------------------------")
             with message_lock:
                 latest_message = decoded
                 latest_symbols = symbols
