@@ -132,6 +132,7 @@ MQTT_TOPIC_MODE = "accontroller/currentmode"
 MQTT_TOPIC_TEMP = "accontroller/currenttemp"
 MQTT_SUB_MODE = "accontroller/setmode"
 MQTT_SUB_TEMP = "accontroller/settemp"
+MQTT_TOPIC_STATUS = "picostatus"
 
 last_requested_mode = None
 last_requested_temp = None
@@ -402,6 +403,73 @@ def mqtt_check_loop():
             set_led("slow")
             time.sleep(1)
 
+# Add these globals to track status
+status_last_sent = ""
+status_last_check_time = 0
+status_apply_start_time = 0
+status_error_reported = False
+
+def publish_status(message):
+    global status_last_sent
+    if message != status_last_sent:
+        try:
+            mqtt_client.publish(MQTT_TOPIC_STATUS, message)
+            status_last_sent = message
+        except Exception as e:
+            print("MQTT status publish failed:", e)
+
+def status_check_loop():
+    global status_last_check_time, status_apply_start_time, status_error_reported
+    while True:
+        now = time.time()
+        with message_lock:
+            current = latest_message
+        # Check if we have a set mode/temp
+        if last_requested_mode or last_requested_temp:
+            # Check if we have a recent AC message
+            time_since_ac = now - led_state["last_ac_msg"]
+            # Check if current matches requested
+            mode_ok = (last_requested_mode is None or (current and current.get("mode", "").lower() == last_requested_mode))
+            temp_ok = (last_requested_temp is None or (current and "display" in current and int(current["display"]) == last_requested_temp))
+            if time_since_ac > 30:
+                # No recent AC messages
+                h = int(time_since_ac // 3600)
+                m = int((time_since_ac % 3600) // 60)
+                s = int(time_since_ac % 60)
+                publish_status(f"Error: No status messages for [{h:02}:{m:02}:{s:02}]")
+                status_apply_start_time = 0
+                status_error_reported = False
+            elif mode_ok and temp_ok:
+                publish_status("Settings applied")
+                status_apply_start_time = 0
+                status_error_reported = False
+            else:
+                # Not matching, check how long we've been trying
+                if status_apply_start_time == 0:
+                    status_apply_start_time = now
+                    status_error_reported = False
+                publish_status("Applying settings...")
+                if not status_error_reported and (now - status_apply_start_time) > 60:
+                    publish_status("Error: Button presses not functioning")
+                    status_error_reported = True
+        else:
+            # No settings requested, just monitor for AC silence
+            time_since_ac = now - led_state["last_ac_msg"]
+            if time_since_ac > 30:
+                h = int(time_since_ac // 3600)
+                m = int((time_since_ac % 3600) // 60)
+                s = int(time_since_ac % 60)
+                publish_status(f"Error: No status messages for [{h:02}:{m:02}:{s:02}]")
+                status_apply_start_time = 0
+                status_error_reported = False
+            else:
+                publish_status("Settings applied")
+                status_apply_start_time = 0
+                status_error_reported = False
+        status_last_check_time = now
+        time.sleep(2)
+
 # --- Thread startup ---
 _thread.start_new_thread(mainboard_reader, ())
+_thread.start_new_thread(status_check_loop, ())
 mqtt_check_loop()
