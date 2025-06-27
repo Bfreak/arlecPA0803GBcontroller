@@ -76,3 +76,7 @@ From the start, I should have seperated message receiving and decoding into sepe
 barring some cleanup, the controller is now working pretty much as required for my needs. The unit succesfully powers up, powers down, cycles through modes and temperatures as required via MQTT, while reporting the current status of the front panel and the pico. I did test it with the front panel attached but confirmed that it interfered with the pico's ability to send commands, so from here I will commit to just not using it.
 
 This could all definitely be more robust. I'm wary that there are possibly voltage fluctuations causing problems with USB connectivity being lost, but the pico functions fine when it does, so I'm not too concerned.
+
+**update** 27-6-2025 / 2
+
+Ok, the unit is officially in situ in my loft! There are defintely more things to add, but I need to make sure the current code is functional with homeassistant before I make any more changes as theres some hot weather on the way so It needs to be working. I will add 2 more things in hardware; an AHT20 sensor so that I can detect the temperature in the loft (I may add more to detect temperatures of air going into and out of the unit, and also to control the unit's dehumidfy mode based on humidity levels) and a controller for a mixed flow fan I've installed above the air conditioner that will pull hot air out of the loft that is added by the air conditioner. How useful this will actually be remains to be seen.
