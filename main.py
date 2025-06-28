@@ -6,8 +6,7 @@ from bittimings import *
 from umqttsimple import MQTTClient
 import network
 from decodedmessages import messages  
-from wifi_config import WIFI_SSID, WIFI_PASSWORD
-
+from network_config import *
 
 # --- LED Setup ---
 led = Pin("LED", Pin.OUT)
@@ -77,6 +76,7 @@ durations = []
 collecting = False
 message_start_time = 0
 MESSAGE_TIMEOUT_US = 1000
+last_button_press_time = 0  # Initialize last_button_press_time
 
 # Shared variables for latest message
 latest_message = None
@@ -92,7 +92,7 @@ tx_pin.high()  # idle state
 known_codes = {
     "up":    "1110011111111010001101010",
     "down":  "1110011111111000101100111",
-    "fan":   "1110011111111010101101011",
+    "fan_only":   "1110011111111010101101011",
     "mode":  "1110011111111001101101001",
     "sleep": "1110011111111001001101000",
     "power": "1110011111110111101100101",
@@ -124,20 +124,49 @@ def connect_wifi():
 
 connect_wifi()
 
-# --- MQTT Setup ---
-MQTT_BROKER = "192.168.1.200"
-MQTT_PORT = 1883  # Add this line
-MQTT_CLIENT_ID = "Anon"
-MQTT_TOPIC_MODE = "accontroller/currentmode"
-MQTT_TOPIC_TEMP = "accontroller/currenttemp"
-MQTT_SUB_MODE = "accontroller/setmode"
-MQTT_SUB_TEMP = "accontroller/settemp"
+
 
 last_requested_mode = None
 last_requested_temp = None
 
+status_last_sent = ""
+status_apply_start_time = 0
+status_error_reported = False
+
+def publish_status(message):
+    global status_last_sent
+    if message != status_last_sent:
+        try:
+            mqtt_client.publish(MQTT_TOPIC_STATUS, message, retain=True)
+            status_last_sent = message
+        except Exception as e:
+            print("MQTT status publish failed:", e)
+
+def publish_discovery():
+    payload = {
+        "name": "Bedroom AC",
+        "unique_id": "bedroom_ac_1",
+        "mode_command_topic": MQTT_SUB_MODE,
+        "mode_state_topic": MQTT_SUB_MODE,  # <-- Home Assistant should read status from setmode
+        "temperature_command_topic": MQTT_SUB_TEMP,
+        "temperature_state_topic": MQTT_TOPIC_TEMP,
+        "min_temp": 16,
+        "max_temp": 31,
+        "modes": ["off", "cool", "dry", "fan_only"],
+        "current_temperature_topic": MQTT_TOPIC_TEMP,
+        "availability_topic": MQTT_TOPIC_AVAIL,
+        "precision": 1.0,
+        "temp_step": 1,
+        "temp_command_template": "{{ value if hvac_mode == 'cool' else none }}",  # Only allow temp in cool mode (for HA template support)
+    }
+    try:
+        mqtt_client.publish(MQTT_DISCOVERY_TOPIC, ujson.dumps(payload), retain=True)
+        mqtt_client.publish(MQTT_TOPIC_AVAIL, "online", retain=True)
+    except Exception as e:
+        print("MQTT discovery publish failed:", e)
+
 def mqtt_callback(topic, msg):
-    global last_requested_mode, last_requested_temp
+    global last_requested_mode, last_requested_temp, MQTT_BROKER, mqtt_client
     try:
         topic = topic.decode() if isinstance(topic, bytes) else topic
         payload = msg.decode().strip().lower()
@@ -145,131 +174,201 @@ def mqtt_callback(topic, msg):
         set_led("double")
 
         if topic == MQTT_SUB_MODE:
-            # Accepts "cool", "dry", "fan", or "power"
+            # Accepts "cool", "dry", "fan_only", "off", or "power"
             requested_mode = payload
-            last_requested_mode = requested_mode
-            if requested_mode == "power":
-                print("Power command received, sending power to AC.")
+            if requested_mode == "off":
+                last_requested_mode = "standby"
+            else:
+                last_requested_mode = requested_mode
+            # Publish set mode for Home Assistant state
+            mqtt_client.publish(MQTT_SUB_MODE, requested_mode, retain=True)
+            if requested_mode in ["power", "off"]:
+                print("Power/off command received, sending power to AC.")
                 send_code(known_codes["power"])
                 time.sleep(0.5)
                 return
             enforce_requested_state()
         elif topic == MQTT_SUB_TEMP:
-            # Accepts a temperature as a string
-            if payload.isdigit():
+            # Only allow temperature change in cool mode
+            if last_requested_mode == "cool" and payload.isdigit():
                 requested_temp = int(payload)
                 last_requested_temp = requested_temp
                 enforce_requested_state()
             else:
-                print(f"Ignoring invalid temperature payload: '{payload}'")
+                print(f"Ignoring temperature payload: '{payload}' (not in cool mode)")
+        elif topic == MQTT_SUB_NEW_BROKER:
+            # Listen for new MQTT broker IP
+            if payload:
+                print(f"Switching MQTT broker to {payload}")
+                try:
+                    mqtt_client.disconnect()
+                except Exception:
+                    pass
+                MQTT_BROKER = payload
+                setup_mqtt_client()
     except Exception as e:
         print("MQTT callback error:", e)
 
-# Add a global to track the last time a button was pressed
-last_button_press_time = 0
+def setup_mqtt_client():
+    global mqtt_client
+    mqtt_client = MQTTClient(MQTT_CLIENT_ID, MQTT_BROKER, port=MQTT_PORT, user = MQTT_username, password = MQTT_password)
+    mqtt_client.set_callback(mqtt_callback)
+    mqtt_connect()
+    publish_discovery()
 
-def enforce_requested_state():
-    global last_requested_mode, last_requested_temp, last_button_press_time
-
-    mode_cycle = ["cool", "dry", "fan"]  # Adjust as needed
-    requested_mode = last_requested_mode
-
-    with message_lock:
-        current = latest_message
-
-    if not current:
-        return
-
-    current_mode = current.get("mode", "").lower()
-
-
-    # If in standby, send power to turn on
-    if current.get("mode", "").lower() == "standby" and last_requested_mode and last_requested_mode != "standby":
-        print("Unit in standby, sending power ON.")
-        send_code(known_codes["power"])
-        last_button_press_time = time.ticks_ms()
-        time.sleep(0.5)
-        return
-
-    if current_mode != "standby" and last_requested_mode == "standby":
-        print("power off request recived, sending power OFF.")
-        send_code(known_codes["power"])
-        last_button_press_time = time.ticks_ms()
-        time.sleep(0.5)
-        return
-
-    if requested_mode and requested_mode not in mode_cycle and requested_mode != "standby" and requested_mode != "power":
-        print(f"Unknown requested mode: {requested_mode}")
-        return
-
-    # Only change mode if not already correct
-    if requested_mode and current_mode != requested_mode:
-        print(f"Current mode is '{current_mode}', changing to '{requested_mode}'")
-        send_code(known_codes["mode"])
-        last_button_press_time = time.ticks_ms()
-        time.sleep(0.5)
-        print("attempting to change mode...")
-        # Do NOT return here; let the function continue to check temperature if needed
-
-    # Only adjust temperature if in cool mode and a temperature is requested
-    if (
-        last_requested_temp is not None
-        and current.get("mode", "").lower() == "cool"
-        and "display" in current
-    ):
-        try:
-            display_temp = int(current["display"])
-            print(f"Current display temp: {display_temp}, requested: {last_requested_temp}")
-            diff = last_requested_temp - display_temp
-            if diff > 0:
-                for _ in range(diff):
-                    send_code(known_codes["up"])
-                    last_button_press_time = time.ticks_ms()
-                    time.sleep(0.1)
-                print(f"Sent {diff} 'up' presses.")
-            elif diff < 0:
-                for _ in range(-diff):
-                    send_code(known_codes["down"])
-                    last_button_press_time = time.ticks_ms()
-                    time.sleep(0.1)
-                print(f"Sent {abs(diff)} 'down' presses.")
-            else:
-                print(f"Set temperature to {last_requested_temp}")
-        except Exception as e:
-            print("Error adjusting temperature:", e)
+def mqtt_connect():
+    try:
+        mqtt_client.connect()
+        mqtt_client.subscribe(MQTT_SUB_MODE)
+        mqtt_client.subscribe(MQTT_SUB_TEMP)
+        mqtt_client.subscribe(MQTT_SUB_NEW_BROKER)
+        print(f"Subscribed to {MQTT_SUB_MODE}, {MQTT_SUB_TEMP}, {MQTT_SUB_NEW_BROKER}")
+        led_state["mqtt_connected"] = True
+        set_led("solid")
+        mqtt_client.publish(MQTT_TOPIC_AVAIL, "online", retain=True)
+    except Exception as e:
+        print("MQTT connection failed:", e)
+        led_state["mqtt_connected"] = False
+        set_led("slow")
 
 def publish_latest_message(decoded, symbols, durations):
     if decoded is None:
         return
-    # Broadcast current mode and temp
     try:
-        if "mode" in decoded:
-            mqtt_client.publish(MQTT_TOPIC_MODE, decoded["mode"])
+        # Map 'standby' to 'off' for Home Assistant
+        mode = decoded.get("mode")
+        if mode:
+            ha_mode = "off" if mode.lower() == "standby" else mode.lower()
+            mqtt_client.publish(MQTT_TOPIC_MODE, ha_mode, retain=True)
         if "display" in decoded:
-            mqtt_client.publish(MQTT_TOPIC_TEMP, str(decoded["display"]))
+            try:
+                temp = int(decoded["display"])
+                if 16 <= temp <= 31:
+                    mqtt_client.publish(MQTT_TOPIC_TEMP, str(temp), retain=True)
+            except Exception:
+                pass  # Ignore invalid temperature values
     except Exception as e:
         print("MQTT publish failed:", e)
-    # Update last AC message time for LED logic
     led_state["last_ac_msg"] = time.time()
-    # Enforce requested state after every new message
     enforce_requested_state()
 
-# Setup MQTT client and callback
-mqtt_client = MQTTClient(MQTT_CLIENT_ID, MQTT_BROKER, port=MQTT_PORT)
-mqtt_client.set_callback(mqtt_callback)
-try:
-    mqtt_client.connect()
-    mqtt_client.subscribe(MQTT_SUB_MODE)
-    mqtt_client.subscribe(MQTT_SUB_TEMP)
-    print(f"Subscribed to {MQTT_SUB_MODE} and {MQTT_SUB_TEMP}")
-    led_state["mqtt_connected"] = True
-    set_led("solid")
-except Exception as e:
-    print("MQTT connection failed:", e)
-    led_state["mqtt_connected"] = False
-    set_led("slow")
+def enforce_requested_state():
+    """
+    Ensures the requested mode and temperature are sent to the AC if needed.
+    Handles standby (off) as a special case for Home Assistant.
+    """
+    global last_requested_mode, last_requested_temp, latest_message
+    with message_lock:
+        current = latest_message
 
-# --- Receiver Thread ---
+    # Map 'off' to 'standby' for internal logic
+    requested_mode = last_requested_mode
+    if requested_mode == "off":
+        requested_mode = "standby"
+
+    current_mode = (current.get("mode", "").lower() if current else None)
+
+    # If AC is in standby and a different mode is requested, send power first
+    if current_mode == "standby" and requested_mode and requested_mode != "standby":
+        send_code(known_codes["power"])
+        time.sleep(0.5)
+        send_code(confirm_code)
+        # After turning on, must send the initial mode (if not 'cool')
+        if requested_mode in ["cool", "dry", "fan_only"]:
+            # If not cool, send mode/fan_only as needed
+            if requested_mode == "fan_only":
+                send_code(known_codes["fan_only"])
+            else:
+                send_code(known_codes["mode"])
+            time.sleep(0.5)
+            send_code(confirm_code)
+        return
+
+    # If mode does not match and not in standby, change mode
+    if requested_mode and current_mode and current_mode != requested_mode and current_mode != "standby":
+        mode_map = {
+            "cool": "mode",
+            "dry": "mode",
+            "fan_only": "mode",
+        }
+        cmd = mode_map.get(requested_mode, None)
+        if cmd and cmd in known_codes:
+            send_code(known_codes[cmd])
+            time.sleep(0.5)
+            send_code(confirm_code)
+
+    # Handle temperature adjustment only in cool mode
+    if (
+        last_requested_temp is not None
+        and current
+        and "display" in current
+        and current.get("mode", "").lower() == "cool"
+    ):
+        try:
+            current_temp = int(current["display"])
+        except Exception:
+            return  # Invalid temp, skip
+        if 16 <= current_temp <= 31:
+            # To change temperature, send the up/down command as needed
+            while current_temp < last_requested_temp:
+                send_code(known_codes["up"])
+                time.sleep(0.5)
+                send_code(confirm_code)
+                current_temp += 1
+            while current_temp > last_requested_temp:
+                send_code(known_codes["down"])
+                time.sleep(0.5)
+                send_code(confirm_code)
+                current_temp -= 1
+
+def status_check_loop():
+    global status_apply_start_time, status_error_reported
+    while True:
+        now = time.time()
+        with message_lock:
+            current = latest_message
+        # Check if we have a set mode/temp
+        if last_requested_mode or last_requested_temp:
+            # Check if we have a recent AC message
+            time_since_ac = now - led_state["last_ac_msg"]
+            mode_ok = (last_requested_mode is None or (current and current.get("mode", "").lower() == last_requested_mode))
+            temp_ok = (last_requested_temp is None or (current and "display" in current and int(current["display"]) == last_requested_temp))
+            if time_since_ac > 30:
+                h = int(time_since_ac // 3600)
+                m = int((time_since_ac % 3600) // 60)
+                s = int(time_since_ac % 60)
+                publish_status(f"Error: No status messages for [{h:02}:{m:02}:{s:02}]")
+                status_apply_start_time = 0
+                status_error_reported = False
+            elif mode_ok and temp_ok:
+                publish_status("Settings applied")
+                status_apply_start_time = 0
+                status_error_reported = False
+            else:
+                if status_apply_start_time == 0:
+                    status_apply_start_time = now
+                    status_error_reported = False
+                publish_status("Applying settings...")
+                if not status_error_reported and (now - status_apply_start_time) > 60:
+                    publish_status("Error: Button presses not functioning")
+                    status_error_reported = True
+        else:
+            time_since_ac = now - led_state["last_ac_msg"]
+            if time_since_ac > 30:
+                h = int(time_since_ac // 3600)
+                m = int((time_since_ac % 3600) // 60)
+                s = int(time_since_ac % 60)
+                publish_status(f"Error: No status messages for [{h:02}:{m:02}:{s:02}]")
+                status_apply_start_time = 0
+                status_error_reported = False
+            else:
+                publish_status("Settings applied")
+                status_apply_start_time = 0
+                status_error_reported = False
+        time.sleep(2)
+
+
+
 def mainboard_reader():
     global last_state, last_change_time, durations, collecting, message_start_time
     global latest_message, latest_symbols, latest_durations
@@ -372,21 +471,6 @@ def thread2():
         except Exception as e:
             print("Error:", e)
 
-def mqtt_connect():
-    global mqtt_client
-    try:
-        mqtt_client.connect()
-        mqtt_client.subscribe(MQTT_SUB_MODE)
-        print(f"Subscribed to {MQTT_SUB_MODE}")
-        mqtt_client.subscribe(MQTT_SUB_TEMP)
-        print(f"Subscribed to {MQTT_SUB_TEMP}")
-        led_state["mqtt_connected"] = True
-        set_led("solid")
-    except Exception as e:
-        print("MQTT connection failed:", e)
-        led_state["mqtt_connected"] = False
-        set_led("slow")
-
 mqtt_client = MQTTClient(MQTT_CLIENT_ID, MQTT_BROKER, port=MQTT_PORT)
 mqtt_client.set_callback(mqtt_callback)
 mqtt_connect()
@@ -402,6 +486,77 @@ def mqtt_check_loop():
             set_led("slow")
             time.sleep(1)
 
+
+# --- Startup ---
+setup_mqtt_client()
+publish_discovery()
+
 # --- Thread startup ---
+# mainboard_reader must always be in its own thread
 _thread.start_new_thread(mainboard_reader, ())
-mqtt_check_loop()
+
+def background_loop():
+    # This loop will handle both status_check_loop and mqtt_check_loop
+    status_last_run = 0
+    while True:
+        now = time.time()
+        # Run status_check_loop logic every 2 seconds
+        if now - status_last_run > 2:
+            status_check_loop_step()
+            status_last_run = now
+        # Run mqtt_check_loop logic as often as possible
+        try:
+            mqtt_client.check_msg()
+        except Exception as e:
+            print("MQTT check error:", e)
+            led_state["mqtt_connected"] = False
+            set_led("slow")
+            time.sleep(1)
+        time.sleep(0.1)
+
+def status_check_loop_step():
+    global status_apply_start_time, status_error_reported
+    now = time.time()
+    with message_lock:
+        current = latest_message
+    # Check if we have a set mode/temp
+    if last_requested_mode or last_requested_temp:
+        # Check if we have a recent AC message
+        time_since_ac = now - led_state["last_ac_msg"]
+        mode_ok = (last_requested_mode is None or (current and current.get("mode", "").lower() == last_requested_mode))
+        temp_ok = (last_requested_temp is None or (current and "display" in current and int(current["display"]) == last_requested_temp))
+        if time_since_ac > 30:
+            h = int(time_since_ac // 3600)
+            m = int((time_since_ac % 3600) // 60)
+            s = int(time_since_ac % 60)
+            publish_status(f"Error: No status messages for [{h:02}:{m:02}:{s:02}]")
+            status_apply_start_time = 0
+            status_error_reported = False
+        elif mode_ok and temp_ok:
+            publish_status("Settings applied")
+            status_apply_start_time = 0
+            status_error_reported = False
+        else:
+            if status_apply_start_time == 0:
+                status_apply_start_time = now
+                status_error_reported = False
+            publish_status("Applying settings...")
+            if not status_error_reported and (now - status_apply_start_time) > 60:
+                publish_status("Error: Button presses not functioning")
+                status_error_reported = True
+    else:
+        time_since_ac = now - led_state["last_ac_msg"]
+        if time_since_ac > 30:
+            h = int(time_since_ac // 3600)
+            m = int((time_since_ac % 3600) // 60)
+            s = int(time_since_ac % 60)
+            publish_status(f"Error: No status messages for [{h:02}:{m:02}:{s:02}]")
+            status_apply_start_time = 0
+            status_error_reported = False
+        else:
+            publish_status("Settings applied")
+            status_apply_start_time = 0
+            status_error_reported = False
+
+# Start the combined background loop in the main thread (or another thread if needed)
+background_loop()
