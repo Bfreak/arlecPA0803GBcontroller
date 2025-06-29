@@ -10,7 +10,7 @@ from network_config import *
 
 # --- LED Setup ---
 led = Pin("LED", Pin.OUT)
-led_timer = Timer()
+led_timer = Timer() # type: ignore
 led_state = {
     "mode": "solid",  # "solid", "slow", "fast", "double"
     "last_ac_msg": time.time(),
@@ -73,7 +73,7 @@ rx_pin = Pin(1, Pin.IN, Pin.PULL_UP)
 last_state = rx_pin.value()
 last_change_time = time.ticks_us()
 durations = []
-collecting = False
+collecting = None
 message_start_time = 0
 MESSAGE_TIMEOUT_US = 1000
 last_button_press_time = 0  # Initialize last_button_press_time
@@ -92,7 +92,7 @@ tx_pin.high()  # idle state
 known_codes = {
     "up":    "1110011111111010001101010",
     "down":  "1110011111111000101100111",
-    "fan_only":   "1110011111111010101101011",
+    "fanspeed":   "1110011111111010101101011",
     "mode":  "1110011111111001101101001",
     "sleep": "1110011111111001001101000",
     "power": "1110011111110111101100101",
@@ -124,10 +124,12 @@ def connect_wifi():
 
 connect_wifi()
 
-
-
-last_requested_mode = None
-last_requested_temp = None
+initialized = False
+reported_mode = "off"
+real_mode = "off"
+real_temp = "19.0"
+requested_temp = "19.0"
+requested_mode = "off"
 
 status_last_sent = ""
 status_apply_start_time = 0
@@ -146,8 +148,8 @@ def publish_discovery():
     payload = {
         "name": "Bedroom AC",
         "unique_id": "bedroom_ac_1",
-        "mode_command_topic": MQTT_SUB_MODE,
-        "mode_state_topic": MQTT_SUB_MODE,  # <-- Home Assistant should read status from setmode
+        "mode_command_topic": MQTT_SUB_MODE, # Current REQUESTED mode: Mode requested by Home Assistant
+        "mode_state_topic": MQTT_TOPIC_MODE, # Current mode: The mode the AC is ACTUALLY IN
         "temperature_command_topic": MQTT_SUB_TEMP,
         "temperature_state_topic": MQTT_TOPIC_TEMP,
         "min_temp": 16,
@@ -157,7 +159,7 @@ def publish_discovery():
         "availability_topic": MQTT_TOPIC_AVAIL,
         "precision": 1.0,
         "temp_step": 1,
-        "temp_command_template": "{{ value if hvac_mode == 'cool' else none }}",  # Only allow temp in cool mode (for HA template support)
+        "temperature_state_template": "{{ value }}",
     }
     try:
         mqtt_client.publish(MQTT_DISCOVERY_TOPIC, ujson.dumps(payload), retain=True)
@@ -166,33 +168,25 @@ def publish_discovery():
         print("MQTT discovery publish failed:", e)
 
 def mqtt_callback(topic, msg):
-    global last_requested_mode, last_requested_temp, MQTT_BROKER, mqtt_client
+    global reported_mode, requested_temp, MQTT_BROKER, mqtt_client, initialized, requested_mode, reported_temp
     try:
         topic = topic.decode() if isinstance(topic, bytes) else topic
         payload = msg.decode().strip().lower()
-        print(f"Received MQTT on {topic}: {payload}")
         set_led("double")
-
+        print("mqtt_callback triggered:", payload)
         if topic == MQTT_SUB_MODE:
-            # Accepts "cool", "dry", "fan_only", "off", or "power"
+            # receive mode change request
             requested_mode = payload
-            if requested_mode == "off":
-                last_requested_mode = "standby"
-            else:
-                last_requested_mode = requested_mode
+            reported_mode = requested_mode
+            initialized = True
             # Publish set mode for Home Assistant state
-            mqtt_client.publish(MQTT_SUB_MODE, requested_mode, retain=True)
-            if requested_mode in ["power", "off"]:
-                print("Power/off command received, sending power to AC.")
-                send_code(known_codes["power"])
-                time.sleep(0.5)
-                return
+            mqtt_client.publish(MQTT_TOPIC_MODE, reported_mode, retain=True)
             enforce_requested_state()
         elif topic == MQTT_SUB_TEMP:
             # Only allow temperature change in cool mode
-            if last_requested_mode == "cool" and payload.isdigit():
+            if reported_mode == "cool" and payload.isdigit():
                 requested_temp = int(payload)
-                last_requested_temp = requested_temp
+                reported_temp = requested_temp
                 enforce_requested_state()
             else:
                 print(f"Ignoring temperature payload: '{payload}' (not in cool mode)")
@@ -214,6 +208,7 @@ def setup_mqtt_client():
     mqtt_client = MQTTClient(MQTT_CLIENT_ID, MQTT_BROKER, port=MQTT_PORT, user = MQTT_username, password = MQTT_password)
     mqtt_client.set_callback(mqtt_callback)
     mqtt_connect()
+    mqtt_client.publish(MQTT_TOPIC_MODE, reported_mode, retain=True)
     publish_discovery()
 
 def mqtt_connect():
@@ -237,139 +232,109 @@ def publish_latest_message(decoded, symbols, durations):
     try:
         # Map 'standby' to 'off' for Home Assistant
         mode = decoded.get("mode")
-        if mode:
-            ha_mode = "off" if mode.lower() == "standby" else mode.lower()
-            mqtt_client.publish(MQTT_TOPIC_MODE, ha_mode, retain=True)
-        if "display" in decoded:
-            try:
-                temp = int(decoded["display"])
-                if 16 <= temp <= 31:
-                    mqtt_client.publish(MQTT_TOPIC_TEMP, str(temp), retain=True)
-            except Exception:
-                pass  # Ignore invalid temperature values
+        temp = decoded.get("display")
+        if mode == "off":
+            mqtt_client.publish(MQTT_REAL_MODE, "off", retain=True)
+            mqtt_client.publish(MQTT_TOPIC_TEMP, temp, retain=True)
+        # Publish real temperature for AH to use on dashboard
+        if mode == "cool":
+            mqtt_client.publish(MQTT_REAL_MODE, mode, retain=True)
+            mqtt_client.publish(MQTT_REAL_TEMP, temp, retain=True)
+        # Publish real mode and temp, NOT used by Home Assistant, but for debugging via mqtt
+        if mode == "dry":
+            mqtt_client.publish(MQTT_REAL_MODE, mode, retain=True)
+            mqtt_client.publish(MQTT_REAL_TEMP, "N/A", retain=True)
+        # Publish real mode and temp for dry mode, NOT used by Home Assistant, but for debugging via mqtt
+        if mode == "fan_only":
+            mqtt_client.publish(MQTT_REAL_MODE, mode, retain=True)
+            mqtt_client.publish(MQTT_REAL_TEMP, "N/A", retain=True)
+        # Publish real mode and temp for fan_only mode, NOT used by Home Assistant, but for debugging via mqtt
     except Exception as e:
         print("MQTT publish failed:", e)
     led_state["last_ac_msg"] = time.time()
-    enforce_requested_state()
+
+def publish_ha_state():
+    """
+    Publish the current state to Home Assistant.
+    This includes the real mode and temperature, and the requested temperature.
+    """
+    global real_mode, real_temp, requested_temp, reported_temp
+    try:
+        # Publish the real mode and temperature
+        mqtt_client.publish(MQTT_REAL_MODE, real_mode, retain=True)
+        if real_mode == "cool":
+            mqtt_client.publish(MQTT_REAL_TEMP, real_temp, retain=True)
+        # Also publish the requested temperature for reference
+        mqtt_client.publish(MQTT_TOPIC_TEMP, requested_temp, retain=True)
+    except Exception as e:
+        print("Error publishing state to Home Assistant:", e)
 
 def enforce_requested_state():
     """
     Ensures the requested mode and temperature are sent to the AC if needed.
     Handles standby (off) as a special case for Home Assistant.
     """
-    global last_requested_mode, last_requested_temp, latest_message
+    global reported_mode, requested_temp, latest_message, requested_mode, real_mode, real_temp
     with message_lock:
         current = latest_message
 
-    # Map 'off' to 'standby' for internal logic
-    requested_mode = last_requested_mode
-    if requested_mode == "off":
-        requested_mode = "standby"
+    # Debug print to trace values
+    print("DEBUG: enforce_requested_state called with real_mode =", real_mode, "requested_mode =", requested_mode, "initialized =", initialized)
 
-    current_mode = (current.get("mode", "").lower() if current else None)
-
-    # If AC is in standby and a different mode is requested, send power first
-    if current_mode == "standby" and requested_mode and requested_mode != "standby":
-        send_code(known_codes["power"])
-        time.sleep(0.5)
-        send_code(confirm_code)
-        # After turning on, must send the initial mode (if not 'cool')
-        if requested_mode in ["cool", "dry", "fan_only"]:
-            # If not cool, send mode/fan_only as needed
-            if requested_mode == "fan_only":
-                send_code(known_codes["fan_only"])
-            else:
-                send_code(known_codes["mode"])
-            time.sleep(0.5)
-            send_code(confirm_code)
+    # Guard clause to skip enforcement if requested_mode is None
+    if requested_mode is None:
+        print("DEBUG: requested_mode is None, skipping enforcement")
         return
 
-    # If mode does not match and not in standby, change mode
-    if requested_mode and current_mode and current_mode != requested_mode and current_mode != "standby":
-        mode_map = {
-            "cool": "mode",
-            "dry": "mode",
-            "fan_only": "mode",
-        }
-        cmd = mode_map.get(requested_mode, None)
-        if cmd and cmd in known_codes:
-            send_code(known_codes[cmd])
-            time.sleep(0.5)
-            send_code(confirm_code)
+    if current:
+        real_mode = current.get("mode", "").lower()
+    # If AC is in standby and a different mode is requested, send power first
+    if real_mode == "off" and requested_mode != "off" and initialized:
+        send_code(known_codes["power"])
+        print("power on request received, sending power on press")
+        time.sleep(11)
+        enforce_requested_state()
+    elif real_mode != requested_mode and requested_mode != "off" and initialized:
+        send_code(known_codes["mode"])
+        print("in incorrect mode:", real_mode)
+        print("changing mode to:", requested_mode)
+        time.sleep(11)
+        enforce_requested_state()
+    elif real_mode != "off" and requested_mode == "off" and initialized:
+        send_code(known_codes["power"])
+        real_mode = "off"
+        time.sleep(5)
+        print("turned off as requested")
+        time.sleep(11)
+        return
+    else:
+        print("mode is correct, no change needed")
+        time.sleep(11)
+        return
 
     # Handle temperature adjustment only in cool mode
     if (
-        last_requested_temp is not None
+        requested_temp is not None
         and current
         and "display" in current
         and current.get("mode", "").lower() == "cool"
     ):
         try:
-            current_temp = int(current["display"])
+            real_temp = int(current["display"])
         except Exception:
             return  # Invalid temp, skip
-        if 16 <= current_temp <= 31:
-            # To change temperature, send the up/down command as needed
-            while current_temp < last_requested_temp:
+        if 16.0 <= real_temp <= 31.0:
+            print("incorrect temp, changing from ", real_temp, "to", requested_temp)
+            target_temp = int(requested_temp)
+            while real_temp < target_temp:
                 send_code(known_codes["up"])
-                time.sleep(0.5)
-                send_code(confirm_code)
-                current_temp += 1
-            while current_temp > last_requested_temp:
+                real_temp += 1
+            while real_temp > target_temp:
                 send_code(known_codes["down"])
-                time.sleep(0.5)
-                send_code(confirm_code)
-                current_temp -= 1
-
-def status_check_loop():
-    global status_apply_start_time, status_error_reported
-    while True:
-        now = time.time()
-        with message_lock:
-            current = latest_message
-        # Check if we have a set mode/temp
-        if last_requested_mode or last_requested_temp:
-            # Check if we have a recent AC message
-            time_since_ac = now - led_state["last_ac_msg"]
-            mode_ok = (last_requested_mode is None or (current and current.get("mode", "").lower() == last_requested_mode))
-            temp_ok = (last_requested_temp is None or (current and "display" in current and int(current["display"]) == last_requested_temp))
-            if time_since_ac > 30:
-                h = int(time_since_ac // 3600)
-                m = int((time_since_ac % 3600) // 60)
-                s = int(time_since_ac % 60)
-                publish_status(f"Error: No status messages for [{h:02}:{m:02}:{s:02}]")
-                status_apply_start_time = 0
-                status_error_reported = False
-            elif mode_ok and temp_ok:
-                publish_status("Settings applied")
-                status_apply_start_time = 0
-                status_error_reported = False
-            else:
-                if status_apply_start_time == 0:
-                    status_apply_start_time = now
-                    status_error_reported = False
-                publish_status("Applying settings...")
-                if not status_error_reported and (now - status_apply_start_time) > 60:
-                    publish_status("Error: Button presses not functioning")
-                    status_error_reported = True
-        else:
-            time_since_ac = now - led_state["last_ac_msg"]
-            if time_since_ac > 30:
-                h = int(time_since_ac // 3600)
-                m = int((time_since_ac % 3600) // 60)
-                s = int(time_since_ac % 60)
-                publish_status(f"Error: No status messages for [{h:02}:{m:02}:{s:02}]")
-                status_apply_start_time = 0
-                status_error_reported = False
-            else:
-                publish_status("Settings applied")
-                status_apply_start_time = 0
-                status_error_reported = False
-        time.sleep(2)
-
-
+                real_temp -= 1
 
 def mainboard_reader():
+    global collecting
     global last_state, last_change_time, durations, collecting, message_start_time
     global latest_message, latest_symbols, latest_durations
     global last_successful_decode_time, last_button_press_time
@@ -414,7 +379,6 @@ def mainboard_reader():
 
         last_state = current_state
 
-        # Timeout if collecting but no end bit after 1000 µs
         if collecting and time.ticks_diff(now, last_change_time) > MESSAGE_TIMEOUT_US:
             symbols = [classify_duration(d) for d in durations]
             decoded = decode_message(symbols)
@@ -451,6 +415,14 @@ def send_code(binary_string):
     send_pulse(1, 300)     # Final bit
     send_pulse(0, 500)     # End bit
     tx_pin.high()          # Idle
+    time.sleep_us(11200)
+    send_pulse(0, 4400)    # Start bit
+    send_pulse(1, 1850)    # Gap 1
+    for bit in "confirm_code":
+        send_bit(bit)
+    send_pulse(1, 300)     # Final bit
+    send_pulse(0, 500)     # End bit
+    tx_pin.high() 
 
 # --- Sender Thread (thread2) ---
 def thread2():
@@ -461,8 +433,6 @@ def thread2():
             cmd = input(">> ").strip().lower()
             if cmd in known_codes:
                 send_code(known_codes[cmd])
-                time.sleep_us(11200)  # 11.2 ms delay
-                send_code(confirm_code)
             else:
                 print("Unknown command.")
         except KeyboardInterrupt:
@@ -489,74 +459,27 @@ def mqtt_check_loop():
 
 # --- Startup ---
 setup_mqtt_client()
-publish_discovery()
-
-# --- Thread startup ---
-# mainboard_reader must always be in its own thread
-_thread.start_new_thread(mainboard_reader, ())
 
 def background_loop():
-    # This loop will handle both status_check_loop and mqtt_check_loop
+    # This loop will handle both check and enforce MQTT messages
     status_last_run = 0
     while True:
-        now = time.time()
-        # Run status_check_loop logic every 2 seconds
-        if now - status_last_run > 2:
-            status_check_loop_step()
-            status_last_run = now
-        # Run mqtt_check_loop logic as often as possible
         try:
             mqtt_client.check_msg()
         except Exception as e:
             print("MQTT check error:", e)
             led_state["mqtt_connected"] = False
             set_led("slow")
-            time.sleep(1)
+            time.sleep(0.1)
         time.sleep(0.1)
+        enforce_requested_state()
+        time.sleep(1)
 
-def status_check_loop_step():
-    global status_apply_start_time, status_error_reported
-    now = time.time()
-    with message_lock:
-        current = latest_message
-    # Check if we have a set mode/temp
-    if last_requested_mode or last_requested_temp:
-        # Check if we have a recent AC message
-        time_since_ac = now - led_state["last_ac_msg"]
-        mode_ok = (last_requested_mode is None or (current and current.get("mode", "").lower() == last_requested_mode))
-        temp_ok = (last_requested_temp is None or (current and "display" in current and int(current["display"]) == last_requested_temp))
-        if time_since_ac > 30:
-            h = int(time_since_ac // 3600)
-            m = int((time_since_ac % 3600) // 60)
-            s = int(time_since_ac % 60)
-            publish_status(f"Error: No status messages for [{h:02}:{m:02}:{s:02}]")
-            status_apply_start_time = 0
-            status_error_reported = False
-        elif mode_ok and temp_ok:
-            publish_status("Settings applied")
-            status_apply_start_time = 0
-            status_error_reported = False
-        else:
-            if status_apply_start_time == 0:
-                status_apply_start_time = now
-                status_error_reported = False
-            publish_status("Applying settings...")
-            if not status_error_reported and (now - status_apply_start_time) > 60:
-                publish_status("Error: Button presses not functioning")
-                status_error_reported = True
-    else:
-        time_since_ac = now - led_state["last_ac_msg"]
-        if time_since_ac > 30:
-            h = int(time_since_ac // 3600)
-            m = int((time_since_ac % 3600) // 60)
-            s = int(time_since_ac % 60)
-            publish_status(f"Error: No status messages for [{h:02}:{m:02}:{s:02}]")
-            status_apply_start_time = 0
-            status_error_reported = False
-        else:
-            publish_status("Settings applied")
-            status_apply_start_time = 0
-            status_error_reported = False
+# --- Thread startup ---
+# mainboard_reader must always be in its own thread
+_thread.start_new_thread(mainboard_reader, ())
 
-# Start the combined background loop in the main thread (or another thread if needed)
-background_loop()
+time.sleep(5)  # Allow time for MQTT connection to stabilize and intial messages from AC to be received.
+
+while True:
+    background_loop()
