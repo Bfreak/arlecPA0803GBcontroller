@@ -1,4 +1,4 @@
-from machine import Pin, Timer
+from machine import Pin, Timer, I2C
 import time
 import _thread
 import ujson
@@ -6,7 +6,14 @@ from bittimings import *
 from umqttsimple import MQTTClient
 import network
 from decodedmessages import messages  
-from network_config import *
+from networkconfig import *
+from ahtx0 import *
+
+#aht20 setup
+loft_i2c = I2C(0, scl=Pin(17), sda=Pin(16))
+intake_i2c = I2C(1, scl=Pin(19), sda=Pin(18))
+loftTemp = AHT20(loft_i2c)
+intakeTemp = AHT20(intake_i2c)
 
 # --- LED Setup ---
 led = Pin("LED", Pin.OUT)
@@ -19,6 +26,20 @@ led_state = {
     "double_pulse_active": False,
     "double_pulse_step": 0,
 }
+
+def publish_temperature():
+    """
+    Publish the current temperature readings from the AHT20 sensors.
+    """
+    try:
+        loft_temp = loftTemp.temperature
+        intake_temp = intakeTemp.temperature
+        mqtt_client.publish("homeassistant/loftsensor/loft_temperature", "{:.1f}".format(loftTemp.temperature)[:4], retain=True)
+        mqtt_client.publish("homeassistant/accontroller/intake_temperature", "{:.1f}".format(intakeTemp.temperature)[:4], retain=True)
+        mqtt_client.publish("homeassistant/loftsensor/loft_humidity", "{:.1f}".format(loftTemp.relative_humidity)[:4], retain=True)
+        mqtt_client.publish("homeassistant/accontroller/intake_humidity", "{:.1f}".format(intakeTemp.relative_humidity)[:4], retain=True)
+    except Exception as e:
+        print("Error publishing temperature:", e)
 
 def set_led(mode):
     led_state["mode"] = mode
@@ -125,11 +146,19 @@ def connect_wifi():
 connect_wifi()
 
 initialized = False
-reported_mode = "off"
-real_mode = "off"
+
+mode_command = "off"
+mode_state = "off"
+mode_real = "off"
+
+temperature_command = "19.0"
+temperature_state = "19.0"
+current_temperature = "19.0"
+
+temp_real = 19.0  # Default target temperature
+
+loft_temp = "19.0"
 real_temp = "19.0"
-requested_temp = "19.0"
-requested_mode = "off"
 
 status_last_sent = ""
 status_apply_start_time = 0
@@ -149,17 +178,21 @@ def publish_discovery():
         "name": "Bedroom AC",
         "unique_id": "bedroom_ac_1",
         "mode_command_topic": MQTT_SUB_MODE, # Current REQUESTED mode: Mode requested by Home Assistant
-        "mode_state_topic": MQTT_TOPIC_MODE, # Current mode: The mode the AC is ACTUALLY IN
-        "temperature_command_topic": MQTT_SUB_TEMP,
-        "temperature_state_topic": MQTT_TOPIC_TEMP,
+        "mode_state_topic": MQTT_TOPIC_MODE, # Current mode: the mode REPORTED to Home Assistant, not the ACTUAL CURRENT mode
+        "mode_real_topic": MQTT_REAL_MODE, # ACTUAL mode: the ACTUAL mode set on the AC
+        "temperature_command_topic": MQTT_SUB_TEMP, # Current REQUESTED temperature: the temperature requested by Home Assistant
+        "temperature_state_topic": MQTT_TOPIC_TEMP, # Current set temperature: the temperature REPORTED to Home Assistant, not the ACTUAL CURRENT temperature
+        "current_temperature_topic": MQTT_REAL_TEMP, # Current AC SET temperature: the current teperature set, or reported by the AC unit
         "min_temp": 16,
         "max_temp": 31,
         "modes": ["off", "cool", "dry", "fan_only"],
-        "current_temperature_topic": MQTT_TOPIC_TEMP,
+        "current_humidity_topic": MQTT_TOPIC_HUM, # Humidity reported by the AHT20 sensor in the loft
         "availability_topic": MQTT_TOPIC_AVAIL,
         "precision": 1.0,
         "temp_step": 1,
-        "temperature_state_template": "{{ value }}",
+        "off_mode_state_template": "{{ value_json }}",
+        "cool_mode_state_template": "{{ value_json }}",
+        "dry_mode_state_template": "{{ value if mode==dry, value_json.current_humidity_topic }}",
     }
     try:
         mqtt_client.publish(MQTT_DISCOVERY_TOPIC, ujson.dumps(payload), retain=True)
@@ -168,28 +201,27 @@ def publish_discovery():
         print("MQTT discovery publish failed:", e)
 
 def mqtt_callback(topic, msg):
-    global reported_mode, requested_temp, MQTT_BROKER, mqtt_client, initialized, requested_mode, reported_temp
+    global mode_state, temperature_state, MQTT_BROKER, mqtt_client, initialized, mode_command, current_temperature, temperature_command, loft_temp
     try:
         topic = topic.decode() if isinstance(topic, bytes) else topic
         payload = msg.decode().strip().lower()
-        set_led("double")
-        print("mqtt_callback triggered:", payload)
         if topic == MQTT_SUB_MODE:
             # receive mode change request
-            requested_mode = payload
-            reported_mode = requested_mode
+            mode_command = payload
+            mode_state = payload
+            mqtt_client.publish(MQTT_TOPIC_MODE, mode_state, retain=True)
             initialized = True
             # Publish set mode for Home Assistant state
-            mqtt_client.publish(MQTT_TOPIC_MODE, reported_mode, retain=True)
             enforce_requested_state()
         elif topic == MQTT_SUB_TEMP:
             # Only allow temperature change in cool mode
-            if reported_mode == "cool" and payload.isdigit():
-                requested_temp = int(payload)
-                reported_temp = requested_temp
+            if mode_state == "cool":
+                temperature_command = payload
+                temperature_state = payload
+                mqtt_client.publish(MQTT_TOPIC_TEMP, temperature_state, retain=True)
                 enforce_requested_state()
             else:
-                print(f"Ignoring temperature payload: '{payload}' (not in cool mode)")
+                print(f"Ignoring temperature payload: '{payload}' in ", mode_state, " mode)")
         elif topic == MQTT_SUB_NEW_BROKER:
             # Listen for new MQTT broker IP
             if payload:
@@ -208,7 +240,7 @@ def setup_mqtt_client():
     mqtt_client = MQTTClient(MQTT_CLIENT_ID, MQTT_BROKER, port=MQTT_PORT, user = MQTT_username, password = MQTT_password)
     mqtt_client.set_callback(mqtt_callback)
     mqtt_connect()
-    mqtt_client.publish(MQTT_TOPIC_MODE, reported_mode, retain=True)
+    mqtt_client.publish(MQTT_TOPIC_MODE, mode_state, retain=True)
     publish_discovery()
 
 def mqtt_connect():
@@ -227,28 +259,20 @@ def mqtt_connect():
         set_led("slow")
 
 def publish_latest_message(decoded, symbols, durations):
+    global loft_temp, mode_real
     if decoded is None:
         return
     try:
         # Map 'standby' to 'off' for Home Assistant
-        mode = decoded.get("mode")
-        temp = decoded.get("display")
-        if mode == "off":
-            mqtt_client.publish(MQTT_REAL_MODE, "off", retain=True)
-            mqtt_client.publish(MQTT_TOPIC_TEMP, temp, retain=True)
-        # Publish real temperature for AH to use on dashboard
-        if mode == "cool":
-            mqtt_client.publish(MQTT_REAL_MODE, mode, retain=True)
-            mqtt_client.publish(MQTT_REAL_TEMP, temp, retain=True)
+        mode_real = decoded.get("mode")
+        temp_real = decoded.get("display")
+        if mode_real == "cool":
+            mqtt_client.publish(MQTT_REAL_MODE, mode_real, retain=True)
+            mqtt_client.publish(MQTT_REAL_TEMP, temp_real, retain=True)
         # Publish real mode and temp, NOT used by Home Assistant, but for debugging via mqtt
-        if mode == "dry":
-            mqtt_client.publish(MQTT_REAL_MODE, mode, retain=True)
-            mqtt_client.publish(MQTT_REAL_TEMP, "N/A", retain=True)
-        # Publish real mode and temp for dry mode, NOT used by Home Assistant, but for debugging via mqtt
-        if mode == "fan_only":
-            mqtt_client.publish(MQTT_REAL_MODE, mode, retain=True)
-            mqtt_client.publish(MQTT_REAL_TEMP, "N/A", retain=True)
-        # Publish real mode and temp for fan_only mode, NOT used by Home Assistant, but for debugging via mqtt
+        else:
+            mqtt_client.publish(MQTT_REAL_MODE, mode_real, retain=True)
+            mqtt_client.publish(MQTT_TOPIC_TEMP, "{:.1f}".format(intakeTemp.temperature)[:4], retain=True)
     except Exception as e:
         print("MQTT publish failed:", e)
     led_state["last_ac_msg"] = time.time()
@@ -258,80 +282,95 @@ def publish_ha_state():
     Publish the current state to Home Assistant.
     This includes the real mode and temperature, and the requested temperature.
     """
-    global real_mode, real_temp, requested_temp, reported_temp
+
+    #first publushing loft temperature and humidity, as an independent sensor
+    # Publish loft temperature and humidity as separate sensors/entities for Home Assistant
+    mqtt_client.publish("homeassistant/sensor/loft_temperature/state", "{:.1f}".format(loftTemp.temperature)[:4], retain=True)
+    mqtt_client.publish("homeassistant/sensor/loft_humidity/state", "{:.1f}".format(loftTemp.relative_humidity)[:4], retain=True)
+
+    global mode_real, real_temp, temperature_command, temperature_state
     try:
         # Publish the real mode and temperature
-        mqtt_client.publish(MQTT_REAL_MODE, real_mode, retain=True)
-        if real_mode == "cool":
-            mqtt_client.publish(MQTT_REAL_TEMP, real_temp, retain=True)
-        # Also publish the requested temperature for reference
-        mqtt_client.publish(MQTT_TOPIC_TEMP, requested_temp, retain=True)
+        mqtt_client.publish(MQTT_REAL_MODE, mode_real, retain=True)
+        if mode_real != "cool":
+            mqtt_client.publish(MQTT_REAL_TEMP, "{:.1f}".format(intakeTemp.temperature)[:4], retain=True)
+        else:
+            mqtt_client.publish(MQTT_TOPIC_TEMP, temperature_state, retain=True)
     except Exception as e:
         print("Error publishing state to Home Assistant:", e)
 
 def enforce_requested_state():
-    """
-    Ensures the requested mode and temperature are sent to the AC if needed.
-    Handles standby (off) as a special case for Home Assistant.
-    """
-    global reported_mode, requested_temp, latest_message, requested_mode, real_mode, real_temp
+    # # For USB testing, the actual function simply replaces mode_real with mode_command,
+    # # simulating that the AC is connected and acting as instructed
+
+    # global mode_real, mode_command, mode_state, temperature_command, current_temperature, temperature_state
+    # if mode_real != mode_command:
+    #     mode_state = mode_command
+    #     mode_real = mode_command
+    #     print("Simulated mode change")
+    #     publish_ha_state()  # Ensure state is published after change
+    # else:
+    #     # Even if no change, ensure state is published for consistency
+    #     publish_ha_state()
+
+    # if current_temperature != temperature_command:
+    #     temperature_state = temperature_command
+    #     current_temperature = temperature_command
+    #     print("Simulated temp change")
+    #     publish_ha_state()  # Ensure state is published after change
+    # else:
+    #     # Even if no change, ensure state is published for consistency
+    #     publish_ha_state()
+
+    # """
+    # Ensures the requested mode and temperature are sent to the AC if needed.
+    # Handles standby (off) as a special case for Home Assistant.
+    # """
+    global mode_real, mode_command, mode_state, temperature_command, current_temperature, temperature_state, temp_real
     with message_lock:
         current = latest_message
 
-    # Debug print to trace values
-    print("DEBUG: enforce_requested_state called with real_mode =", real_mode, "requested_mode =", requested_mode, "initialized =", initialized)
-
-    # Guard clause to skip enforcement if requested_mode is None
-    if requested_mode is None:
-        print("DEBUG: requested_mode is None, skipping enforcement")
-        return
-
     if current:
-        real_mode = current.get("mode", "").lower()
+        mode_real = current.get("mode", "").lower()
+        temp_real = current.get("display", "").lower()
     # If AC is in standby and a different mode is requested, send power first
-    if real_mode == "off" and requested_mode != "off" and initialized:
+    if mode_real == "off" and mode_command != "off" and initialized:
         send_code(known_codes["power"])
         print("power on request received, sending power on press")
         time.sleep(11)
         enforce_requested_state()
-    elif real_mode != requested_mode and requested_mode != "off" and initialized:
+    elif mode_real != mode_command and mode_command != "off" and initialized:
         send_code(known_codes["mode"])
-        print("in incorrect mode:", real_mode)
-        print("changing mode to:", requested_mode)
+        print("in incorrect mode:", mode_real)
+        print("changing mode to:", mode_command)
         time.sleep(11)
         enforce_requested_state()
-    elif real_mode != "off" and requested_mode == "off" and initialized:
+    elif mode_real != "off" and mode_command == "off" and initialized:
         send_code(known_codes["power"])
-        real_mode = "off"
+        mode_real = "off"
         time.sleep(5)
         print("turned off as requested")
         time.sleep(11)
         return
-    else:
-        print("mode is correct, no change needed")
-        time.sleep(11)
-        return
-
-    # Handle temperature adjustment only in cool mode
-    if (
-        requested_temp is not None
-        and current
-        and "display" in current
-        and current.get("mode", "").lower() == "cool"
-    ):
+    elif temp_real != temperature_command and mode_command == "cool" and initialized:
+        print("incorrect temp, changing from ", temp_real, "to", temperature_command)
         try:
-            real_temp = int(current["display"])
-        except Exception:
-            return  # Invalid temp, skip
-        if 16.0 <= real_temp <= 31.0:
-            print("incorrect temp, changing from ", real_temp, "to", requested_temp)
-            target_temp = int(requested_temp)
-            while real_temp < target_temp:
-                send_code(known_codes["up"])
-                real_temp += 1
-            while real_temp > target_temp:
-                send_code(known_codes["down"])
-                real_temp -= 1
+            target_temp = float(temperature_command)
+            temp_real_f = float(temp_real)
+            # Use a tolerance for float comparison
+            while abs(temp_real_f - target_temp) > 0.1:
+                if temp_real_f < target_temp:
+                    send_code(known_codes["up"])
+                    temp_real_f += 1.0
+                elif temp_real_f > target_temp:
+                    send_code(known_codes["down"])
+                    temp_real_f -= 1.0
+            temp_real = "{:.1f}".format(temp_real_f)
+        except Exception as e:
+            print("Temperature adjustment error:", e)
+    else:
+        # If no changes are needed, just publish the state
+        publish_ha_state()
 
 def mainboard_reader():
     global collecting
@@ -474,6 +513,7 @@ def background_loop():
         time.sleep(0.1)
         enforce_requested_state()
         time.sleep(1)
+        
 
 # --- Thread startup ---
 # mainboard_reader must always be in its own thread
