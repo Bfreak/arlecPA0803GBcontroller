@@ -250,11 +250,11 @@ def enforce_requested_state():
         send_code(known_codes["power"])
         print("power on request received, sending power on press")
         #here I made the decision to just put the device on high fan mode when it is turned on. I may or may not implement proper fan speed control later when I understand homeassistant templates better.
-        time.sleep(3)
+        time.sleep(1)
         send_code(known_codes["fanspeed"])
         time.sleep(1)
         send_code(known_codes["fanspeed"])
-        time.sleep(3)
+        time.sleep(20)
         enforce_requested_state()
     elif mode_real != mode_command and mode_command != "off" and initialized:
         send_code(known_codes["mode"])
