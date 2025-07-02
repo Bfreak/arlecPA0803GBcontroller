@@ -2,7 +2,9 @@ from machine import Pin
 import time
 
 tx = Pin(0, Pin.OUT)
-tx.high()
+tx.low()
+rx = Pin(1, Pin.OUT)
+rx.low()
 
 def send_start():
     tx.low()
@@ -30,6 +32,7 @@ def send_binary_message(bits):
 
     # End bit
     send_pulse(600)
+    tx.high()
     print("Done")
     
-send_binary_message("011011111100000011111001111111111111111111011111110111111110111001111111") 
+send_binary_message("011011111011000011111001111111111111111111111110010101111111111100010111") 

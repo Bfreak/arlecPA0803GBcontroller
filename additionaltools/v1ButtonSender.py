@@ -4,7 +4,7 @@ from machine import Pin
 import time
 
 # Transmit pin (GPIO1)
-tx = Pin(0, Pin.OUT, Pin.PULL_UP)
+tx = Pin(1, Pin.OUT, Pin.PULL_UP)
 tx.high()  # idle state
 
 # Known commands (excluding confirm)

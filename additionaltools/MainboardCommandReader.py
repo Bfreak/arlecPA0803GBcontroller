@@ -5,7 +5,7 @@ from bittimings import *
 from decodedmessages import messages  
 # Disable pin 0 so it does not affect the voltage of what it's connected to
 # Pin(0, Pin.IN)
-pin = Pin(1, Pin.IN, Pin.PULL_UP)
+pin = Pin(0, Pin.IN, Pin.PULL_UP)
 last_state = pin.value()
 last_change_time = time.ticks_us()
 durations = []
