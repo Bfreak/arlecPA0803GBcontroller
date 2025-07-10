@@ -80,3 +80,7 @@ This could all definitely be more robust. I'm wary that there are possibly volta
 **update** 27-6-2025 / 2
 
 Ok, the unit is officially in situ in my loft! There are defintely more things to add, but I need to make sure the current code is functional with homeassistant before I make any more changes as theres some hot weather on the way so It needs to be working. I will add 2 more things in hardware; an AHT20 sensor so that I can detect the temperature in the loft (I may add more to detect temperatures of air going into and out of the unit, and also to control the unit's dehumidfy mode based on humidity levels) and a controller for a mixed flow fan I've installed above the air conditioner that will pull hot air out of the loft that is added by the air conditioner. How useful this will actually be remains to be seen.
+
+**update** 10-7-2025
+
+So I have been using the controller for 2 weeks now with mixed results. It works well most of the time, but crashes and requires a reboot occasionally (every other day maybe). The  problem is that its very easy for me to do this, I just have to toggle a switch in my hallway, also, its very hot at the moment, so having everything in place is important to keep the room cool. For that reason, the code will remain 'as is' for a little while. Hopefully it is of use to someone else some day! From what I can see, other arlec and cheapo brand AC units probably use the same control panel and can therefore also be controlled with this software.
