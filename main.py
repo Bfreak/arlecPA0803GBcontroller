@@ -1,3 +1,16 @@
+# --- READ BEFORE USING --- # --- READ BEFORE USING --- # --- READ BEFORE USING --- # --- READ BEFORE USING ---
+#
+# Hi. I have released this under version v0.0.1 Alpha but it is still very much a work in progress.
+# The pico WILL LIKELY crash at least once every other day. When it does, you will need to unplug it and plug it back in, and this means power cycling the air conditioner too, sometimes while it is running. The manufacturers do not advise doing this, so it is at your own risk.
+# The code is not very well tested, and I have not yet implemented any error handling or recovery.
+# But it does work! If you found it useful, please consider adding to it.
+#
+# Remember that you MUST fit a logic level shifter to the TX pin and RX pin, as the AC unit uses 5V logic and the pico uses 3.3V logic. 
+# If you do not do this, you will likely damage your pico. the little 4 channel modules are cheap and easy to use, and you can find them on the usual e-waste generators.
+# If you plan to use this to control the AC unit in a situation other than what it was designed (like I did, cooling another room from the loft) Be careful. I'm a risk taker and an idiot, and doing so is probalby not safe at all.
+#
+# --- READ BEFORE USING --- # --- READ BEFORE USING --- # --- READ BEFORE USING --- # --- READ BEFORE USING ---
+
 from machine import Pin, Timer, I2C
 import time
 import _thread
@@ -10,6 +23,7 @@ from ahtx0 import AHT20
 import projectconfig
 from projectconfig import *
 from mainboardreader import *
+
 
 # --- Sender Setup ---
 tx_pin = Pin(0, Pin.OUT, Pin.PULL_UP)
